@@ -9,7 +9,7 @@ import { createMcpServer } from './mcp-server.js';
 
 const config = loadConfig();
 const app = express();
-// Exactly one reverse proxy (host Nginx or the Compose Caddy service).
+// Exactly one reverse proxy: the host Nginx.
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '5mb' }));
 const oauth = installOAuth(app);
