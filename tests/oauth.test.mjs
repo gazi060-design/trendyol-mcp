@@ -37,6 +37,7 @@ test('OAuth discovery, owner consent, PKCE, single-use grants, refresh rotation 
     const challenge = createHash('sha256').update(verifier).digest('base64url');
     const auth = await fetch(base + '/authorize?' + new URLSearchParams({ client_id: client.client_id, redirect_uri: redirectUri, response_type: 'code', code_challenge: challenge, code_challenge_method: 'S256', state: 'original-state', scope: 'trendyol', resource: resource.resource }));
     assert.equal(auth.status, 200);
+    assert.match(auth.headers.get('content-security-policy'), /form-action 'self' https:\/\/chatgpt\.com;/);
     const html = await auth.text();
     const request = html.match(/name="request" value="([^"]+)"/)[1];
     const csrf = html.match(/name="csrf" value="([^"]+)"/)[1];
