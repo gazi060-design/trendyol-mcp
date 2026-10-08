@@ -45,7 +45,21 @@ function clientFor(config: AppConfig, alias: string) {
 }
 
 export function createMcpServer(config: AppConfig): McpServer {
-  const server = new McpServer({ name: 'trendyol-marketplace-mcp', version: '1.3.0' });
+  const server = new McpServer(
+    { name: 'trendyol-marketplace-mcp', version: '1.3.0' },
+    {
+      instructions: [
+        'STORE SELECTION RULES (mandatory):',
+        '1. At the beginning of every new conversation/session involving this Trendyol MCP, ask the user which configured store they want to work with before performing any store-specific operation.',
+        '2. Do not assume, reuse, or infer a store from another conversation/session. A store mentioned in the initial request does not replace the requirement to ask for store selection at session start.',
+        '3. Use trendyol_list_stores when needed to present the available store aliases and display names.',
+        '4. After the user explicitly selects a store, use that store consistently until the user explicitly changes it.',
+        '5. Every assistant response related to this Trendyol MCP after store selection must begin with the selected store display name (for example: "MyBook: ...").',
+        '6. If the requested store is ambiguous or not configured, ask the user to choose a valid configured store before calling store-specific tools.',
+        '7. Never perform a write operation without the separate explicit confirmation required by the write tool, even when a store has already been selected.'
+      ].join('\n')
+    }
+  );
 
   server.registerTool('trendyol_list_stores', {
     description: 'List configured Trendyol store aliases and display names. Never exposes API keys or secrets.',
