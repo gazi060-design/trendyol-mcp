@@ -89,7 +89,7 @@ export class OwnerOAuthProvider implements OAuthServerProvider {
     const id = random(), csrf = random();
     this.pending.set(id, { clientId: client.client_id, params, csrf, expires: now() + 300, attempts: 0 });
     res.cookie('mcp_oauth_request', id, { secure: true, httpOnly: true, sameSite: 'lax', path: '/oauth/approve', maxAge: 300000 });
-    res.set({ 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'", 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
+    res.set({ 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'; form-action 'self' https://chatgpt.com; frame-ancestors 'none'; base-uri 'none'", 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
     res.type('html').send(`<!doctype html><html lang="tr"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Trendyol MCP bağlantısı</title><h1>Trendyol MCP bağlantısı</h1><p>ChatGPT'ye yapılandırılmış Trendyol mağazalarına erişim izni ver. Veri değiştirme işlemleri ayrıca onayını ister.</p><form method="post" action="/oauth/approve"><input type="hidden" name="request" value="${id}"><input type="hidden" name="csrf" value="${csrf}"><label>Bağlantı şifresi <input name="password" type="password" required autocomplete="current-password" maxlength="512"></label><button type="submit">Bağlantıya izin ver</button></form></html>`);
   }
 
