@@ -143,7 +143,7 @@ identity provider. Existing `MCP_API_TOKEN` clients continue to work.
    `http://127.0.0.1:3000`. Use the existing TLS configuration and proxy **all**
    paths, including `/authorize`, `/token`, `/register`, `/revoke`,
    `/oauth/approve` and `/.well-known/`. Disable proxy buffering for MCP streams.
-   Do not launch the Caddy override when Nginx already owns ports 80/443.
+   HTTPS is terminated by the existing host Nginx; no additional proxy container is required.
 
 4. Verify public discovery (no credentials needed):
 
