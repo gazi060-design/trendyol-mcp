@@ -1,0 +1,24 @@
+services:
+  trendyol-mcp:
+    ports: !reset []
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      MCP_DOMAIN: ${MCP_DOMAIN:-mcp.kigagu.com}
+      MCP_PORT: ${MCP_PORT:-3000}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      trendyol-mcp:
+        condition: service_healthy
+
+volumes:
+  caddy_data:
+  caddy_config:
