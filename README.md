@@ -104,3 +104,82 @@ This protection currently applies to:
 Read-only tools do not require confirmation.
 
 > Note: the server can enforce the two-phase technical handshake, but the final proof that a human actually clicked/typed approval depends on the MCP client. For production, use a client that surfaces tool confirmations to the user and does not auto-approve write tools.
+
+
+## Connect to ChatGPT with OAuth (existing Nginx)
+
+ChatGPT uses OAuth rather than a manually entered static Bearer token. This server
+supports the MCP SDK authorization-code flow with S256 PKCE and dynamic client
+registration (DCR). Only HTTPS callback URLs on `chatgpt.com` can be registered.
+This is a private **single-owner** integration: authorizing a connection grants
+access to all stores configured in `TRENDYOL_STORES_JSON`. It is not a multi-user
+identity provider. Existing `MCP_API_TOKEN` clients continue to work.
+
+1. Generate a separate owner login password locally:
+
+   ```bash
+   openssl rand -hex 32
+   ```
+
+2. Add these values to `.env`. Use the generated password, not the placeholder:
+
+   ```env
+   MCP_PUBLIC_URL=https://mcp.kigagu.com
+   MCP_OAUTH_PASSWORD=<generated-password-at-least-32-characters>
+   ```
+
+   Both values must be set to enable OAuth. Leave both blank to disable it.
+   Keep `MCP_API_TOKEN` configured for existing token-based clients. Never commit
+   `.env` or paste any credentials into chat.
+
+3. As the rootless Docker owner, deploy using the base Compose file:
+
+   ```bash
+   git pull
+   docker compose -f docker-compose.yml up -d --build
+   ```
+
+   The MCP port is bound to `127.0.0.1`; the host Nginx proxies to
+   `http://127.0.0.1:3000`. Use the existing TLS configuration and proxy **all**
+   paths, including `/authorize`, `/token`, `/register`, `/revoke`,
+   `/oauth/approve` and `/.well-known/`. Disable proxy buffering for MCP streams.
+   Do not launch the Caddy override when Nginx already owns ports 80/443.
+
+4. Verify public discovery (no credentials needed):
+
+   ```bash
+   curl https://mcp.kigagu.com/.well-known/oauth-authorization-server
+   curl https://mcp.kigagu.com/.well-known/oauth-protected-resource/mcp
+   ```
+
+5. In ChatGPT Plugins, select **+ → Add custom MCP server**. Enter
+   `https://mcp.kigagu.com/mcp`, choose **OAuth**, and use **dynamic client
+   registration / DCR**. Leave static client ID and client secret blank.
+   Install the resulting plugin and connect your account. Enter
+   `MCP_OAUTH_PASSWORD` only in the login form on `mcp.kigagu.com`, then approve.
+   Use the installed plugin with `@` in a conversation.
+
+OAuth access tokens expire after one hour. Refresh tokens expire after seven days
+and rotate on use. Authorization codes are single-use and expire after one minute;
+login requests expire after five minutes. The SDK validates S256 PKCE before token
+exchange. Browser consent uses a Secure, HttpOnly, SameSite cookie and a CSRF token;
+login attempts and OAuth endpoints are rate limited. Write tools retain their
+separate payload-specific confirmation requirement.
+
+The `oauth_data` Docker volume preserves registered clients and hashed tokens
+across restarts. Do not delete this volume unless you intend to revoke connections.
+Changing `MCP_OAUTH_PASSWORD` or `MCP_PUBLIC_URL` invalidates existing OAuth state;
+remove and recreate the ChatGPT connection after such a change. Outside Docker,
+set `MCP_OAUTH_STATE_FILE` to a private writable file to preserve state; without it,
+state lives only in memory. Run one server replica with this state file.
+
+## Validation
+
+```bash
+npm ci
+npm test
+```
+
+Tests exercise actual HTTP OAuth discovery, registration, consent, PKCE rejection,
+redirect/resource binding, replay rejection, refresh rotation, revocation and
+restart persistence without calling any Trendyol API.

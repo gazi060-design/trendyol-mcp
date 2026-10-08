@@ -1,4 +1,6 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
+import type {} from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
+import { installOAuth, oauthChallenge } from './oauth.js';
 import { randomUUID } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
@@ -7,13 +9,26 @@ import { createMcpServer } from './mcp-server.js';
 
 const config = loadConfig();
 const app = express();
+// Exactly one reverse proxy (host Nginx or the Compose Caddy service).
+app.set('trust proxy', 1);
 app.use(express.json({ limit: '5mb' }));
+const oauth = installOAuth(app);
 
 app.get('/health', (_req, res) => res.json({ ok: true, service: 'trendyol-marketplace-mcp' }));
 
-function authenticate(req: Request, res: Response, next: NextFunction) {
-  if (!config.mcpApiToken) return next();
-  if (req.header('authorization') === `Bearer ${config.mcpApiToken}`) return next();
+async function authenticate(req: Request, res: Response, next: NextFunction) {
+  if (!config.mcpApiToken && !oauth) return next();
+  if (config.mcpApiToken && req.header('authorization') === `Bearer ${config.mcpApiToken}`) return next();
+  if (oauth) {
+    const token = req.header('authorization')?.match(/^Bearer (.+)$/)?.[1];
+    if (token) {
+      try {
+        req.auth = await oauth.verifyAccessToken(token);
+        return next();
+      } catch { /* Return OAuth discovery challenge for invalid tokens. */ }
+    }
+    res.set('WWW-Authenticate', oauthChallenge(oauth));
+  }
   return res.status(401).json({ error: 'Unauthorized' });
 }
 app.use('/mcp', authenticate);
