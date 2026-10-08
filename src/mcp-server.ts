@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { AppConfig } from './config.js';
+import { getStore } from './config.js';
 import { TrendyolClient } from './trendyol-client.js';
 import { consumeConfirmation, requestConfirmation } from './confirmation-store.js';
 
@@ -20,6 +21,7 @@ function writeGuard(toolName: string, payload: unknown, confirmationId?: string,
       })
     };
   }
+
   const consumed = consumeConfirmation(toolName, payload, confirmationId, approved);
   if (!consumed.ok) {
     return {
@@ -27,6 +29,7 @@ function writeGuard(toolName: string, payload: unknown, confirmationId?: string,
       result: { ...jsonText({ requiresConfirmation: true, error: consumed.reason }), isError: true }
     };
   }
+
   return { pending: false as const };
 }
 
@@ -35,106 +38,143 @@ const approvalFields = {
   approved: z.boolean().optional().describe('Must be true only after explicit user approval'),
 };
 
+const storeField = z.string().min(1).describe('Trendyol store alias configured in TRENDYOL_STORES_JSON');
+
+function clientFor(config: AppConfig, alias: string) {
+  return new TrendyolClient(config, getStore(config, alias));
+}
+
 export function createMcpServer(config: AppConfig): McpServer {
-  const server = new McpServer({ name: 'trendyol-marketplace-mcp', version: '1.1.0' });
-  const api = new TrendyolClient(config);
+  const server = new McpServer({ name: 'trendyol-marketplace-mcp', version: '1.2.0' });
+
+  server.registerTool('trendyol_list_stores', {
+    description: 'List configured Trendyol store aliases and display names. Never exposes API keys or secrets.',
+    inputSchema: z.object({})
+  }, async () => jsonText({
+    stores: Object.values(config.stores).map((store) => ({ alias: store.alias, name: store.name ?? store.alias, sellerId: store.sellerId }))
+  }));
 
   server.registerTool('trendyol_get_product', {
-    description: 'Read seller products from Trendyol. Read-only.',
-    inputSchema: z.object({ barcode: z.string().optional(), page: z.number().int().min(0).default(0), size: z.number().int().min(1).max(200).default(50) })
-  }, async ({ barcode, page, size }) => {
+    description: 'Read seller products from a specific Trendyol store. Read-only.',
+    inputSchema: z.object({ store: storeField, barcode: z.string().optional(), page: z.number().int().min(0).default(0), size: z.number().int().min(1).max(200).default(50) })
+  }, async ({ store, barcode, page, size }) => {
+    const api = clientFor(config, store);
     const qs = new URLSearchParams({ page: String(page), size: String(size) });
     if (barcode) qs.set('barcode', barcode);
-    const path = api.sellerPath(`/integration/product/sellers/{sellerId}/products?${qs}`);
-    return jsonText(await api.request('GET', path));
+    return jsonText(await api.request('GET', api.sellerPath(`/integration/product/sellers/{sellerId}/products?${qs}`)));
   });
 
   server.registerTool('trendyol_get_batch_result', {
     description: 'Read an asynchronous Trendyol batch result. Read-only.',
-    inputSchema: z.object({ batchRequestId: z.string().min(1) })
-  }, async ({ batchRequestId }) => jsonText(await api.request('GET', `/integration/product/batch-requests/${encodeURIComponent(batchRequestId)}`)));
+    inputSchema: z.object({ store: storeField, batchRequestId: z.string().min(1) })
+  }, async ({ store, batchRequestId }) => {
+    const api = clientFor(config, store);
+    return jsonText(await api.request('GET', `/integration/product/batch-requests/${encodeURIComponent(batchRequestId)}`));
+  });
 
   server.registerTool('trendyol_get_brands', {
     description: 'List Trendyol brands. Read-only.',
-    inputSchema: z.object({ page: z.number().int().min(0).default(0), size: z.number().int().min(1).max(1000).default(100) })
-  }, async ({ page, size }) => jsonText(await api.request('GET', `/integration/product/brands?page=${page}&size=${size}`)));
+    inputSchema: z.object({ store: storeField, page: z.number().int().min(0).default(0), size: z.number().int().min(1).max(1000).default(100) })
+  }, async ({ store, page, size }) => {
+    const api = clientFor(config, store);
+    return jsonText(await api.request('GET', `/integration/product/brands?page=${page}&size=${size}`));
+  });
 
   server.registerTool('trendyol_find_brand', {
     description: 'Search Trendyol brands by name. Read-only.',
-    inputSchema: z.object({ name: z.string().min(1), page: z.number().int().min(0).default(0), size: z.number().int().min(1).max(1000).default(100) })
-  }, async ({ name, page, size }) => jsonText(await api.request('GET', `/integration/product/brands/by-name?name=${encodeURIComponent(name)}&page=${page}&size=${size}`)));
+    inputSchema: z.object({ store: storeField, name: z.string().min(1), page: z.number().int().min(0).default(0), size: z.number().int().min(1).max(1000).default(100) })
+  }, async ({ store, name, page, size }) => {
+    const api = clientFor(config, store);
+    return jsonText(await api.request('GET', `/integration/product/brands/by-name?name=${encodeURIComponent(name)}&page=${page}&size=${size}`));
+  });
 
   server.registerTool('trendyol_get_categories', {
     description: 'List Trendyol product categories. Read-only.',
-    inputSchema: z.object({})
-  }, async () => jsonText(await api.request('GET', '/integration/product/product-categories')));
+    inputSchema: z.object({ store: storeField })
+  }, async ({ store }) => {
+    const api = clientFor(config, store);
+    return jsonText(await api.request('GET', '/integration/product/product-categories'));
+  });
 
   server.registerTool('trendyol_get_category_attributes', {
     description: 'Read category attributes. Read-only.',
-    inputSchema: z.object({ categoryId: z.number().int().positive() })
-  }, async ({ categoryId }) => jsonText(await api.request('GET', `/integration/product/product-categories/${categoryId}/attributes`)));
+    inputSchema: z.object({ store: storeField, categoryId: z.number().int().positive() })
+  }, async ({ store, categoryId }) => {
+    const api = clientFor(config, store);
+    return jsonText(await api.request('GET', `/integration/product/product-categories/${categoryId}/attributes`));
+  });
 
   server.registerTool('trendyol_get_orders_stream', {
-    description: 'Read shipment packages with cursor-based order streaming. Read-only.',
-    inputSchema: z.object({ cursor: z.string().optional(), size: z.number().int().min(1).max(200).default(200), startDate: z.number().int().optional(), endDate: z.number().int().optional(), status: z.string().optional() })
-  }, async ({ cursor, size, startDate, endDate, status }) => {
+    description: 'Read shipment packages from a specific store with cursor-based order streaming. Read-only.',
+    inputSchema: z.object({ store: storeField, cursor: z.string().optional(), size: z.number().int().min(1).max(200).default(200), startDate: z.number().int().optional(), endDate: z.number().int().optional(), status: z.string().optional() })
+  }, async ({ store, cursor, size, startDate, endDate, status }) => {
+    const api = clientFor(config, store);
     const qs = new URLSearchParams({ size: String(size) });
     if (cursor) qs.set('cursor', cursor);
     if (startDate) qs.set('startDate', String(startDate));
     if (endDate) qs.set('endDate', String(endDate));
     if (status) qs.set('status', status);
-    const path = api.sellerPath(`/integration/order/sellers/{sellerId}/v2/shipment-packages?${qs}`);
-    return jsonText(await api.request('GET', path));
+    return jsonText(await api.request('GET', api.sellerPath(`/integration/order/sellers/{sellerId}/v2/shipment-packages?${qs}`)));
   });
 
   server.registerTool('trendyol_create_products', {
-    description: 'Create products. WRITE operation; mandatory explicit confirmation.',
-    inputSchema: z.object({ items: z.array(z.record(z.unknown())).min(1).max(1000), ...approvalFields })
-  }, async ({ items, confirmationId, approved }) => {
-    const payload = { items };
+    description: 'Create products in the selected store. WRITE operation; mandatory explicit confirmation.',
+    inputSchema: z.object({ store: storeField, items: z.array(z.record(z.unknown())).min(1).max(1000), ...approvalFields })
+  }, async ({ store, items, confirmationId, approved }) => {
+    const normalizedStore = getStore(config, store).alias;
+    const payload = { store: normalizedStore, items };
     const guard = writeGuard('trendyol_create_products', payload, confirmationId, approved);
     if (guard.pending) return guard.result;
-    return jsonText(await api.request('POST', api.sellerPath('/integration/product/sellers/{sellerId}/v2/products'), payload));
+    const api = clientFor(config, normalizedStore);
+    return jsonText(await api.request('POST', api.sellerPath('/integration/product/sellers/{sellerId}/v2/products'), { items }));
   });
 
   server.registerTool('trendyol_update_stock_price', {
-    description: 'Update product stock and/or price. WRITE operation; mandatory explicit confirmation.',
-    inputSchema: z.object({ items: z.array(z.record(z.unknown())).min(1).max(1000), ...approvalFields })
-  }, async ({ items, confirmationId, approved }) => {
-    const payload = { items };
+    description: 'Update stock and/or price in the selected store. WRITE operation; mandatory explicit confirmation.',
+    inputSchema: z.object({ store: storeField, items: z.array(z.record(z.unknown())).min(1).max(1000), ...approvalFields })
+  }, async ({ store, items, confirmationId, approved }) => {
+    const normalizedStore = getStore(config, store).alias;
+    const payload = { store: normalizedStore, items };
     const guard = writeGuard('trendyol_update_stock_price', payload, confirmationId, approved);
     if (guard.pending) return guard.result;
-    return jsonText(await api.request('POST', api.sellerPath('/integration/inventory/sellers/{sellerId}/products/price-and-inventory'), payload));
+    const api = clientFor(config, normalizedStore);
+    return jsonText(await api.request('POST', api.sellerPath('/integration/inventory/sellers/{sellerId}/products/price-and-inventory'), { items }));
   });
 
   server.registerTool('trendyol_update_product_content', {
-    description: 'Update product content. WRITE operation; mandatory explicit confirmation.',
-    inputSchema: z.object({ items: z.array(z.record(z.unknown())).min(1).max(1000), ...approvalFields })
-  }, async ({ items, confirmationId, approved }) => {
-    const payload = { items };
+    description: 'Update product content in the selected store. WRITE operation; mandatory explicit confirmation.',
+    inputSchema: z.object({ store: storeField, items: z.array(z.record(z.unknown())).min(1).max(1000), ...approvalFields })
+  }, async ({ store, items, confirmationId, approved }) => {
+    const normalizedStore = getStore(config, store).alias;
+    const payload = { store: normalizedStore, items };
     const guard = writeGuard('trendyol_update_product_content', payload, confirmationId, approved);
     if (guard.pending) return guard.result;
-    return jsonText(await api.request('PUT', api.sellerPath('/integration/product/sellers/{sellerId}/v2/products'), payload));
+    const api = clientFor(config, normalizedStore);
+    return jsonText(await api.request('PUT', api.sellerPath('/integration/product/sellers/{sellerId}/v2/products'), { items }));
   });
 
   server.registerTool('trendyol_update_product_variants', {
-    description: 'Update product variants. WRITE operation; mandatory explicit confirmation.',
-    inputSchema: z.object({ items: z.array(z.record(z.unknown())).min(1).max(1000), ...approvalFields })
-  }, async ({ items, confirmationId, approved }) => {
-    const payload = { items };
+    description: 'Update product variants in the selected store. WRITE operation; mandatory explicit confirmation.',
+    inputSchema: z.object({ store: storeField, items: z.array(z.record(z.unknown())).min(1).max(1000), ...approvalFields })
+  }, async ({ store, items, confirmationId, approved }) => {
+    const normalizedStore = getStore(config, store).alias;
+    const payload = { store: normalizedStore, items };
     const guard = writeGuard('trendyol_update_product_variants', payload, confirmationId, approved);
     if (guard.pending) return guard.result;
-    return jsonText(await api.request('PUT', api.sellerPath('/integration/product/sellers/{sellerId}/v2/products/variants'), payload));
+    const api = clientFor(config, normalizedStore);
+    return jsonText(await api.request('PUT', api.sellerPath('/integration/product/sellers/{sellerId}/v2/products/variants'), { items }));
   });
 
   server.registerTool('trendyol_update_delivery_info', {
-    description: 'Update product delivery information. WRITE operation; mandatory explicit confirmation.',
-    inputSchema: z.object({ items: z.array(z.record(z.unknown())).min(1).max(1000), ...approvalFields })
-  }, async ({ items, confirmationId, approved }) => {
-    const payload = { items };
+    description: 'Update product delivery information in the selected store. WRITE operation; mandatory explicit confirmation.',
+    inputSchema: z.object({ store: storeField, items: z.array(z.record(z.unknown())).min(1).max(1000), ...approvalFields })
+  }, async ({ store, items, confirmationId, approved }) => {
+    const normalizedStore = getStore(config, store).alias;
+    const payload = { store: normalizedStore, items };
     const guard = writeGuard('trendyol_update_delivery_info', payload, confirmationId, approved);
     if (guard.pending) return guard.result;
-    return jsonText(await api.request('PUT', api.sellerPath('/integration/product/sellers/{sellerId}/products/delivery-information'), payload));
+    const api = clientFor(config, normalizedStore);
+    return jsonText(await api.request('PUT', api.sellerPath('/integration/product/sellers/{sellerId}/products/delivery-information'), { items }));
   });
 
   return server;
