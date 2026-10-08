@@ -12,6 +12,69 @@ const app = express();
 // Exactly one reverse proxy: the host Nginx.
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '5mb' }));
+
+function sanitizeLogValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitizeLogValue);
+  if (!value || typeof value !== 'object') return value;
+
+  const redactedKeys = new Set([
+    'authorization',
+    'token',
+    'access_token',
+    'refresh_token',
+    'client_secret',
+    'api_key',
+    'apikey',
+    'password',
+    'secret'
+  ]);
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+      key,
+      redactedKeys.has(key.toLowerCase()) ? '[REDACTED]' : sanitizeLogValue(item)
+    ])
+  );
+}
+
+app.use((req, res, next) => {
+  const startedAt = Date.now();
+  const requestId = randomUUID();
+  const body = req.body as Record<string, unknown> | undefined;
+  const params = body && typeof body.params === 'object' && body.params
+    ? body.params as Record<string, unknown>
+    : undefined;
+
+  const logEntry = {
+    event: 'http_request',
+    requestId,
+    method: req.method,
+    path: req.originalUrl,
+    ip: req.ip,
+    sessionId: req.header('mcp-session-id') ?? null,
+    userAgent: req.header('user-agent') ?? null,
+    jsonrpcMethod: typeof body?.method === 'string' ? body.method : null,
+    tool: typeof params?.name === 'string' ? params.name : null,
+    arguments: params?.arguments === undefined ? undefined : sanitizeLogValue(params.arguments)
+  };
+
+  console.log(JSON.stringify(logEntry));
+
+  res.on('finish', () => {
+    console.log(JSON.stringify({
+      event: 'http_response',
+      requestId,
+      method: req.method,
+      path: req.originalUrl,
+      status: res.statusCode,
+      durationMs: Date.now() - startedAt,
+      sessionId: req.header('mcp-session-id') ?? null
+    }));
+  });
+
+  next();
+});
+
 const oauth = installOAuth(app);
 
 app.get('/health', (_req, res) => res.json({ ok: true, service: 'trendyol-marketplace-mcp' }));
