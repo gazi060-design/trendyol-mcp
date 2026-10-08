@@ -45,7 +45,7 @@ function clientFor(config: AppConfig, alias: string) {
 }
 
 export function createMcpServer(config: AppConfig): McpServer {
-  const server = new McpServer({ name: 'trendyol-marketplace-mcp', version: '1.2.1' });
+  const server = new McpServer({ name: 'trendyol-marketplace-mcp', version: '1.3.0' });
 
   server.registerTool('trendyol_list_stores', {
     description: 'List configured Trendyol store aliases and display names. Never exposes API keys or secrets.',
@@ -152,6 +152,68 @@ export function createMcpServer(config: AppConfig): McpServer {
     const nextCursor = totalPages !== undefined && resultPage + 1 < totalPages ? String(resultPage + 1) : undefined;
 
     return jsonText({ ...result, cursor: String(resultPage), nextCursor });
+  });
+
+  server.registerTool('trendyol_get_customer_questions', {
+    description: 'List customer product questions for a specific Trendyol store. Read-only. Without date filters Trendyol returns recent questions.',
+    inputSchema: z.object({
+      store: storeField,
+      barcode: z.string().optional(),
+      startDate: z.number().int().optional(),
+      endDate: z.number().int().optional(),
+      status: z.enum(['WAITING_FOR_ANSWER', 'ANSWERED', 'REJECTED', 'REPORTED']).optional(),
+      orderByField: z.enum(['CreatedDate', 'LastModifiedDate']).default('CreatedDate'),
+      orderByDirection: z.enum(['ASC', 'DESC']).default('DESC'),
+      page: z.number().int().min(0).default(0),
+      size: z.number().int().min(1).max(200).default(50)
+    })
+  }, async ({ store, barcode, startDate, endDate, status, orderByField, orderByDirection, page, size }) => {
+    const api = clientFor(config, store);
+    const qs = new URLSearchParams({
+      page: String(page),
+      size: String(size),
+      orderByField,
+      orderByDirection
+    });
+    if (barcode) qs.set('barcode', barcode);
+    if (startDate !== undefined) qs.set('startDate', String(startDate));
+    if (endDate !== undefined) qs.set('endDate', String(endDate));
+    if (status) qs.set('status', status);
+
+    return jsonText(await api.request('GET', api.sellerPath(`/integration/qna/sellers/{sellerId}/questions/filter?${qs}`)));
+  });
+
+  server.registerTool('trendyol_get_customer_question', {
+    description: 'Read a single Trendyol customer question by question id. Read-only.',
+    inputSchema: z.object({
+      store: storeField,
+      questionId: z.number().int().positive()
+    })
+  }, async ({ store, questionId }) => {
+    const api = clientFor(config, store);
+    return jsonText(await api.request('GET', api.sellerPath(`/integration/qna/sellers/{sellerId}/questions/${questionId}`)));
+  });
+
+  server.registerTool('trendyol_answer_customer_question', {
+    description: 'Answer a Trendyol customer question. WRITE operation; mandatory explicit confirmation. Answer text must be between 10 and 2000 characters.',
+    inputSchema: z.object({
+      store: storeField,
+      questionId: z.number().int().positive(),
+      text: z.string().min(10).max(2000),
+      ...approvalFields
+    })
+  }, async ({ store, questionId, text, confirmationId, approved }) => {
+    const normalizedStore = getStore(config, store).alias;
+    const payload = { store: normalizedStore, questionId, text };
+    const guard = writeGuard('trendyol_answer_customer_question', payload, confirmationId, approved);
+    if (guard.pending) return guard.result;
+
+    const api = clientFor(config, normalizedStore);
+    return jsonText(await api.request(
+      'POST',
+      api.sellerPath(`/integration/qna/sellers/{sellerId}/questions/${questionId}/answers`),
+      { text }
+    ));
   });
 
   server.registerTool('trendyol_create_products', {
