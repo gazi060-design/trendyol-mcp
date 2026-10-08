@@ -1,0 +1,5 @@
+{$MCP_DOMAIN} {
+    reverse_proxy trendyol-mcp:{$MCP_PORT} {
+        flush_interval -1
+    }
+}
