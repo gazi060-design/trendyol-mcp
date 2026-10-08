@@ -104,17 +104,27 @@ export function createMcpServer(config: AppConfig): McpServer {
     return jsonText(await api.request('GET', `/integration/product/product-categories/${categoryId}/attributes`));
   });
 
-  server.registerTool('trendyol_get_orders_stream', {
-    description: 'Read shipment packages from a specific store with cursor-based order streaming. Read-only.',
-    inputSchema: z.object({ store: storeField, cursor: z.string().optional(), size: z.number().int().min(1).max(200).default(200), startDate: z.number().int().optional(), endDate: z.number().int().optional(), status: z.string().optional() })
-  }, async ({ store, cursor, size, startDate, endDate, status }) => {
+  server.registerTool('trendyol_get_orders', {
+    description: 'Read orders from a specific Trendyol store using the Order V2 endpoint. Read-only.',
+    inputSchema: z.object({
+      store: storeField,
+      page: z.number().int().min(0).default(0),
+      size: z.number().int().min(1).max(200).default(50),
+      startDate: z.number().int().optional(),
+      endDate: z.number().int().optional(),
+      status: z.string().optional(),
+      orderByField: z.string().optional(),
+      orderByDirection: z.enum(['ASC', 'DESC']).optional()
+    })
+  }, async ({ store, page, size, startDate, endDate, status, orderByField, orderByDirection }) => {
     const api = clientFor(config, store);
-    const qs = new URLSearchParams({ size: String(size) });
-    if (cursor) qs.set('cursor', cursor);
+    const qs = new URLSearchParams({ page: String(page), size: String(size) });
     if (startDate) qs.set('startDate', String(startDate));
     if (endDate) qs.set('endDate', String(endDate));
     if (status) qs.set('status', status);
-    return jsonText(await api.request('GET', api.sellerPath(`/integration/order/sellers/{sellerId}/v2/shipment-packages?${qs}`)));
+    if (orderByField) qs.set('orderByField', orderByField);
+    if (orderByDirection) qs.set('orderByDirection', orderByDirection);
+    return jsonText(await api.request('GET', api.sellerPath(`/integration/order/sellers/{sellerId}/v2/orders?${qs}`)));
   });
 
   server.registerTool('trendyol_create_products', {
