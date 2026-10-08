@@ -45,7 +45,7 @@ function clientFor(config: AppConfig, alias: string) {
 }
 
 export function createMcpServer(config: AppConfig): McpServer {
-  const server = new McpServer({ name: 'trendyol-marketplace-mcp', version: '1.2.0' });
+  const server = new McpServer({ name: 'trendyol-marketplace-mcp', version: '1.2.1' });
 
   server.registerTool('trendyol_list_stores', {
     description: 'List configured Trendyol store aliases and display names. Never exposes API keys or secrets.',
@@ -125,6 +125,33 @@ export function createMcpServer(config: AppConfig): McpServer {
     if (orderByField) qs.set('orderByField', orderByField);
     if (orderByDirection) qs.set('orderByDirection', orderByDirection);
     return jsonText(await api.request('GET', api.sellerPath(`/integration/order/sellers/{sellerId}/v2/orders?${qs}`)));
+  });
+
+  server.registerTool('trendyol_get_orders_stream', {
+    description: 'Read shipment packages from a specific store with cursor-based order streaming. Read-only.',
+    inputSchema: z.object({
+      store: storeField,
+      cursor: z.string().optional(),
+      size: z.number().int().min(1).max(200).default(200),
+      startDate: z.number().int().optional(),
+      endDate: z.number().int().optional(),
+      status: z.string().optional()
+    })
+  }, async ({ store, cursor, size, startDate, endDate, status }) => {
+    const api = clientFor(config, store);
+    const parsedPage = cursor === undefined ? 0 : Number.parseInt(cursor, 10);
+    const page = Number.isInteger(parsedPage) && parsedPage >= 0 ? parsedPage : 0;
+    const qs = new URLSearchParams({ page: String(page), size: String(size) });
+    if (startDate) qs.set('startDate', String(startDate));
+    if (endDate) qs.set('endDate', String(endDate));
+    if (status) qs.set('status', status);
+
+    const result = await api.request('GET', api.sellerPath(`/integration/order/sellers/{sellerId}/v2/orders?${qs}`)) as Record<string, unknown>;
+    const resultPage = typeof result.page === 'number' ? result.page : page;
+    const totalPages = typeof result.totalPages === 'number' ? result.totalPages : undefined;
+    const nextCursor = totalPages !== undefined && resultPage + 1 < totalPages ? String(resultPage + 1) : undefined;
+
+    return jsonText({ ...result, cursor: String(resultPage), nextCursor });
   });
 
   server.registerTool('trendyol_create_products', {
