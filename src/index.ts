@@ -6,6 +6,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { loadConfig } from './config.js';
 import { createMcpServer } from './mcp-server.js';
+import { registerOrderQuestionTools } from './order-questions.js';
 
 const config = loadConfig();
 const app = express();
@@ -116,6 +117,7 @@ app.post('/mcp', async (req, res) => {
       };
 
       const server = createMcpServer(config);
+      registerOrderQuestionTools(server, config);
       await server.connect(transport);
     } else {
       res.status(400).json({
