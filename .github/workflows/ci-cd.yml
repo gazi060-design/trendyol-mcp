@@ -1,0 +1,103 @@
+name: Test and deploy
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Build production image
+        run: docker build -t trendyol-mcp:ci .
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    concurrency:
+      group: trendyol-mcp-production
+      cancel-in-progress: false
+    steps:
+      - name: Validate deployment configuration
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          missing=0
+          for key in DEPLOY_HOST DEPLOY_USER DEPLOY_PATH DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS; do
+            if [[ -z "${!key}" ]]; then
+              echo "::error::Missing GitHub Actions secret: $key"
+              missing=1
+            fi
+          done
+          exit "$missing"
+      - name: Update server and wait for health check
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          TARGET_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]]
+          [[ "$DEPLOY_USER" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*$ ]]
+          [[ "${DEPLOY_PORT:-22}" =~ ^[0-9]+$ ]]
+          # Restrict the remote path so it can safely cross the SSH shell boundary.
+          [[ "$DEPLOY_PATH" =~ ^/[a-zA-Z0-9_./-]+$ ]]
+          [[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]
+          key_file=$(mktemp)
+          hosts_file=$(mktemp)
+          trap 'rm -f "$key_file" "$hosts_file"' EXIT
+          chmod 600 "$key_file" "$hosts_file"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$key_file"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$hosts_file"
+          ssh -i "$key_file" -p "${DEPLOY_PORT:-22}" \
+            -o BatchMode=yes -o ConnectTimeout=20 -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$hosts_file" \
+            "$DEPLOY_USER@$DEPLOY_HOST" "bash -s -- '$DEPLOY_PATH' '$TARGET_SHA'" <<'REMOTE'
+          set -euo pipefail
+          cd "$1"
+          expected_sha="$2"
+          # Use the existing rootless Docker user's daemon and persistent volumes.
+          export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+          if [[ -S "$XDG_RUNTIME_DIR/docker.sock" ]]; then
+            export DOCKER_HOST="unix://$XDG_RUNTIME_DIR/docker.sock"
+          fi
+          [[ "$(git branch --show-current)" == main ]]
+          [[ -z "$(git status --porcelain --untracked-files=no)" ]]
+          test -f .env
+          git fetch origin main
+          # A superseded run must never deploy a newer, untested commit.
+          if [[ "$(git rev-parse origin/main)" != "$expected_sha" ]]; then
+            echo 'Main changed since this run; refusing stale deployment.' >&2
+            exit 1
+          fi
+          git merge --ff-only "$expected_sha"
+          [[ "$(git rev-parse HEAD)" == "$expected_sha" ]]
+          docker compose -f docker-compose.yml up -d --build --wait --wait-timeout 120
+          docker compose -f docker-compose.yml ps
+          echo "Deployed $expected_sha; container health check passed."
+          REMOTE
