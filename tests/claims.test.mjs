@@ -1,0 +1,62 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { createMcpServer } from '../dist/mcp-server.js';
+
+const claimId = '00000000-0000-4000-8000-000000000001';
+const itemId = '00000000-0000-4000-8000-000000000002';
+test('claims: filters, pagination, store isolation, validation, confirmations and multipart evidence', async () => {
+  const config = { baseUrl: 'https://example.test', stores: Object.fromEntries(['mybook', 'hizlikargo'].map((alias, i) => [alias, { alias, sellerId: String(i + 1), apiKey: alias, apiSecret: 'test', userAgent: 'test' }])) };
+  const server = createMcpServer(config);
+  const client = new Client({ name: 'test', version: '1' });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await server.connect(a); await client.connect(b);
+  const calls = []; let status = 'WaitingInAction'; let fail = false;
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: new URL(url), ...options });
+    if (fail) return new Response('failure', { status: 500 });
+    return new Response(options.method === 'GET' ? JSON.stringify({ totalPages: 2, content: [{ id: claimId, items: [{ claimItems: [{ id: itemId, claimItemStatus: { name: status } }] }] }] }) : '', { status: 200 });
+  };
+  const call = (name, args) => client.callTool({ name, arguments: args });
+  const data = r => JSON.parse(r.content[0].text);
+  try {
+    await call('trendyol_get_waiting_claims', { store: 'mybook', page: 1 });
+    assert.equal(calls.at(-1).url.pathname, '/integration/order/sellers/1/claims');
+    assert.equal(calls.at(-1).url.searchParams.get('claimItemStatus'), 'WaitingInAction');
+    assert.equal(calls.at(-1).url.searchParams.get('page'), '1');
+    assert.equal(calls.at(-1).url.searchParams.has('startDate'), false);
+    await call('trendyol_get_claim', { store: 'hizlikargo', claimId });
+    assert.equal(calls.at(-1).url.pathname, '/integration/order/sellers/2/claims');
+    assert.equal(calls.at(-1).url.searchParams.get('claimIds'), claimId);
+    const count = calls.length;
+    assert.equal((await call('trendyol_get_claims', { store: 'mybook', startDate: 2, endDate: 1 })).isError, true);
+    assert.equal((await call('trendyol_get_waiting_claims', { store: 'unknown' })).isError, true);
+    assert.equal(calls.length, count);
+    const args = { store: 'mybook', claimId, claimLineItemIdList: [itemId] };
+    let pending = data(await call('trendyol_approve_claim_items', args));
+    assert.equal(calls.length, count);
+    assert.equal((await call('trendyol_approve_claim_items', { ...args, store: 'hizlikargo', approved: true, confirmationId: pending.confirmationId })).isError, true);
+    pending = data(await call('trendyol_approve_claim_items', args));
+    const confirmed = { ...args, approved: true, confirmationId: pending.confirmationId };
+    assert.equal(data(await call('trendyol_approve_claim_items', confirmed)).submitted, true);
+    assert.equal(calls.at(-1).method, 'PUT');
+    assert.deepEqual(JSON.parse(calls.at(-1).body), { claimLineItemIdList: [itemId], params: {} });
+    assert.equal((await call('trendyol_approve_claim_items', confirmed)).isError, true);
+    pending = data(await call('trendyol_approve_claim_items', args)); status = 'Accepted';
+    assert.equal((await call('trendyol_approve_claim_items', { ...args, approved: true, confirmationId: pending.confirmationId })).isError, true);
+    assert.equal(calls.at(-1).method, 'GET'); status = 'WaitingInAction';
+    const issue = { store: 'mybook', claimId, claimItemIdList: [itemId], claimIssueReasonId: 51, description: 'Hasarlı ürün' };
+    assert.equal((await call('trendyol_create_claim_issue', issue)).isError, true);
+    issue.files = [{ name: 'evidence.pdf', mimeType: 'application/pdf', base64: Buffer.from('test evidence').toString('base64') }];
+    pending = data(await call('trendyol_create_claim_issue', issue));
+    assert.equal(data(await call('trendyol_create_claim_issue', { ...issue, approved: true, confirmationId: pending.confirmationId })).submitted, true);
+    assert.equal(calls.at(-1).method, 'POST');
+    assert.equal(calls.at(-1).url.searchParams.get('description'), issue.description);
+    assert.equal(calls.at(-1).headers['Content-Type'], undefined);
+    assert.equal(await calls.at(-1).body.get('files').text(), 'test evidence');
+    fail = true;
+    assert.equal((await call('trendyol_get_waiting_claims', { store: 'mybook' })).isError, true);
+  } finally { globalThis.fetch = original; await client.close(); await server.close(); }
+});

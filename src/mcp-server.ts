@@ -46,7 +46,7 @@ function clientFor(config: AppConfig, alias: string) {
 
 export function createMcpServer(config: AppConfig): McpServer {
   const server = new McpServer(
-    { name: 'trendyol-marketplace-mcp', version: '1.3.0' },
+    { name: 'trendyol-marketplace-mcp', version: '1.4.0' },
     {
       instructions: [
         'STORE SELECTION RULES (mandatory):',
@@ -116,6 +116,94 @@ export function createMcpServer(config: AppConfig): McpServer {
   }, async ({ store, categoryId }) => {
     const api = clientFor(config, store);
     return jsonText(await api.request('GET', `/integration/product/product-categories/${categoryId}/attributes`));
+  });
+
+  const claimIdField = z.string().uuid();
+  const claimItemsField = z.array(z.string().uuid()).min(1).refine(ids => new Set(ids).size === ids.length, 'Duplicate claim item IDs');
+  const claimPageFields = {
+    store: storeField,
+    page: z.number().int().min(0).default(0),
+    size: z.number().int().min(1).max(200).default(50),
+  };
+  const listClaims = async (store: string, filters: Record<string, string | number | undefined>) => {
+    const api = clientFor(config, store);
+    const qs = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) if (value !== undefined) qs.set(key, String(value));
+    return jsonText(await api.request('GET', api.sellerPath(`/integration/order/sellers/{sellerId}/claims?${qs}`)));
+  };
+
+  server.registerTool('trendyol_get_claims', {
+    description: 'List return claims, not undelivered Returned shipment packages. Read-only. Follow totalPages using page to inspect all results. Dates are milliseconds; omit dates for pending-action checks.',
+    inputSchema: z.object({
+      ...claimPageFields,
+      claimItemStatus: z.enum(['Created', 'WaitingInAction', 'WaitingFraudCheck', 'Accepted', 'Cancelled', 'Rejected', 'Unresolved', 'InAnalysis']).optional(),
+      startDate: z.number().int().nonnegative().optional(),
+      endDate: z.number().int().nonnegative().optional(),
+      orderNumber: z.string().min(1).optional(),
+    }).refine(v => v.startDate === undefined || v.endDate === undefined || v.startDate <= v.endDate, 'startDate must not exceed endDate')
+  }, async ({ store, ...filters }) => listClaims(store, filters));
+
+  server.registerTool('trendyol_get_waiting_claims', {
+    description: 'List returns awaiting seller action (WaitingInAction) for one store. Read-only. Follow totalPages using page; counts are claim packages, not individual items. Does not accept or reject anything.',
+    inputSchema: z.object(claimPageFields)
+  }, async ({ store, ...filters }) => listClaims(store, { ...filters, claimItemStatus: 'WaitingInAction' }));
+
+  server.registerTool('trendyol_get_claim', {
+    description: 'Read a return claim by ID, including item status, reasons and customer notes.',
+    inputSchema: z.object({ store: storeField, claimId: claimIdField })
+  }, async ({ store, claimId }) => listClaims(store, { claimIds: claimId }));
+
+  server.registerTool('trendyol_get_claim_issue_reasons', {
+    description: 'Read current return rejection/analysis reasons. Reason 1651 cannot be used in the first 24 hours of WaitingInAction; 2101 requires a customer exchange request.',
+    inputSchema: z.object({ store: storeField })
+  }, async ({ store }) => jsonText(await clientFor(config, store).request('GET', '/integration/order/claim-issue-reasons')));
+
+  const checkWaitingItems = async (api: TrendyolClient, claimId: string, ids: string[]) => {
+    const result = await api.request<{ content?: Array<{ id: string; items?: Array<{ claimItems?: Array<{ id: string; claimItemStatus?: { name?: string } }> }> }> }>(
+      'GET', api.sellerPath(`/integration/order/sellers/{sellerId}/claims?claimIds=${encodeURIComponent(claimId)}`));
+    const claim = result.content?.find(c => c.id === claimId);
+    const items = claim?.items?.flatMap(item => item.claimItems ?? []) ?? [];
+    if (!ids.every(id => items.some(item => item.id === id && item.claimItemStatus?.name === 'WaitingInAction'))) {
+      throw new Error('Every selected claim item must belong to this claim/store and currently be WaitingInAction. Read the claim again.');
+    }
+  };
+
+  server.registerTool('trendyol_approve_claim_items', {
+    description: 'Accept selected return items. WRITE; requires explicit user approval and a single-use confirmation. Rechecks WaitingInAction before writing.',
+    inputSchema: z.object({ store: storeField, claimId: claimIdField, claimLineItemIdList: claimItemsField, ...approvalFields })
+  }, async ({ store, confirmationId, approved, ...data }) => {
+    const normalizedStore = getStore(config, store).alias;
+    const guard = writeGuard('trendyol_approve_claim_items', { store: normalizedStore, ...data }, confirmationId, approved);
+    if (guard.pending) return guard.result;
+    const api = clientFor(config, normalizedStore);
+    await checkWaitingItems(api, data.claimId, data.claimLineItemIdList);
+    const result = await api.request('PUT', api.sellerPath(`/integration/order/sellers/{sellerId}/claims/${data.claimId}/items/approve`), { claimLineItemIdList: data.claimLineItemIdList, params: {} });
+    return jsonText({ submitted: true, result, message: 'Approval submitted; read claim again for final status (fraud review may apply).' });
+  });
+
+  server.registerTool('trendyol_create_claim_issue', {
+    description: 'Submit a return rejection/analysis request; this is not a final rejection. WRITE; explicit confirmation required. Evidence files are base64, max 5 MB each. Do not invent evidence or customer requests.',
+    inputSchema: z.object({
+      store: storeField, claimId: claimIdField, claimItemIdList: claimItemsField,
+      claimIssueReasonId: z.number().int().positive(), description: z.string().trim().min(1).max(500),
+      files: z.array(z.object({
+        name: z.string().min(1).max(255).regex(/^[^/\\]+$/),
+        mimeType: z.enum(['image/jpeg', 'image/png', 'application/pdf', 'image/tiff', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'video/mp4', 'video/quicktime']),
+        base64: z.string().min(4).max(6990508).regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/)
+          .refine(v => Buffer.from(v, 'base64').length <= 5 * 1024 * 1024, 'File exceeds 5 MB'),
+      })).max(5).default([]), ...approvalFields
+    }).refine(v => [1651, 451, 2101].includes(v.claimIssueReasonId) || v.files.length > 0, 'Evidence files required for this reason')
+  }, async ({ store, confirmationId, approved, ...data }) => {
+    const normalizedStore = getStore(config, store).alias;
+    const guard = writeGuard('trendyol_create_claim_issue', { store: normalizedStore, ...data }, confirmationId, approved);
+    if (guard.pending) return guard.result;
+    const api = clientFor(config, normalizedStore);
+    await checkWaitingItems(api, data.claimId, data.claimItemIdList);
+    const qs = new URLSearchParams({ claimIssueReasonId: String(data.claimIssueReasonId), claimItemIdList: data.claimItemIdList.join(','), description: data.description });
+    const form = new FormData();
+    for (const file of data.files) form.append('files', new Blob([new Uint8Array(Buffer.from(file.base64, 'base64'))], { type: file.mimeType }), file.name);
+    const result = await api.request('POST', api.sellerPath(`/integration/order/sellers/{sellerId}/claims/${data.claimId}/issue?${qs}`), form);
+    return jsonText({ submitted: true, result, message: 'Issue submitted; read claim again to track the decision.' });
   });
 
   server.registerTool('trendyol_get_orders', {
