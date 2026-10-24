@@ -11,7 +11,6 @@ export class TrendyolClient {
     return {
       Authorization: `Basic ${basic}`,
       'User-Agent': this.store.userAgent,
-      'Content-Type': 'application/json',
       Accept: 'application/json',
       ...extra,
     };
@@ -20,8 +19,8 @@ export class TrendyolClient {
   async request<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
     const res = await fetch(`${this.config.baseUrl}${path}`, {
       method,
-      headers: this.headers(),
-      body: body === undefined ? undefined : JSON.stringify(body),
+      headers: this.headers(body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+      body: body instanceof FormData ? body : body === undefined ? undefined : JSON.stringify(body),
     });
 
     const text = await res.text();
