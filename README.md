@@ -183,3 +183,29 @@ npm test
 Tests exercise actual HTTP OAuth discovery, registration, consent, PKCE rejection,
 redirect/resource binding, replay rejection, refresh rotation, revocation and
 restart persistence without calling any Trendyol API.
+
+
+## İade yönetimi
+
+- `trendyol_get_claims`: Durum, sipariş numarası, tarih ve sayfa filtreleriyle iade talepleri.
+- `trendyol_get_waiting_claims`: Aksiyon bekleyen (`WaitingInAction`) iade paketleri. MyBook ve HızlıKargo için ayrı çağırın; `totalPages` bitene kadar `page` artırın. Sayılar paket sayısıdır, ürün adedi değildir.
+- `trendyol_get_claim`: İade ID'sine göre kalem, gerekçe ve durum bilgileri.
+- `trendyol_get_claim_issue_reasons`: Güncel ret/analiz nedenleri.
+- `trendyol_approve_claim_items`: Seçili iade kalemlerini kabul etme.
+- `trendyol_create_claim_issue`: Ret/analiz talebi gönderme; nihai ret kararı anlamına gelmez. Kanıt dosyaları base64 olarak verilir, dosya başına 5 MB ve çağrı başına 5 dosya sınırı vardır.
+
+Kabul/ret işlemleri mevcut tek kullanımlık, 5 dakika geçerli onay mekanizmasını kullanır. Mağaza, kalem, gerekçe veya dosya değişirse yeni onay gerekir. Gönderim öncesinde kalemlerin ilgili mağazaya/iadeye ait ve halen WaitingInAction olduğu yeniden kontrol edilir. Gerçek iade talepleri, sipariş API'sindeki teslim edilemeyip geri dönen Returned paketlerinden farklıdır.
+
+1651, 451 ve 2101 dışındaki ret nedenleri için kanıt gerekir. 1651 ilk 24 saatte seçilemez; bu zaman kuralını Trendyol API uygular. 2101 sadece müşterinin değişim talebi varsa kullanılmalıdır. Son durumu işlemden sonra yeniden sorgulayın.
+
+Örnek salt okunur çağrı: `trendyol_get_waiting_claims({"store":"mybook","page":0,"size":50})`.
+
+### Yayına alma ve doğrulama
+
+`npm ci && npm test` ardından mevcut Docker/sunucu dağıtım süreciyle yeniden yayınlayın. ChatGPT bağlantısının araç listesini yenileyin; yeni iade araçlarının göründüğünü kontrol edin. Canlı ortamda önce iki mağazada sadece listeleme çağrılarını deneyin. Testler sahte API yanıtlarıyla MCP üzerinden çalışır; canlı iade onayı/ret işlemi yapılmamıştır.
+
+Resmî Türkiye API belgeleri:
+- https://developers.trendyol.com/reference/getclaims
+- https://developers.trendyol.com/docs/i%CC%87ade-sipari%C5%9Fleri-onaylama-approveclaimlineitems
+- https://developers.trendyol.com/docs/i%CC%87ade-sipari%C5%9Flerinde-ret-talebi-olu%C5%9Fturma-createclaimissue
+- https://developers.trendyol.com/reference/getclaimissuereasons
