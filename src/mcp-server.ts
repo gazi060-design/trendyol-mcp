@@ -5,7 +5,7 @@ import { getStore } from './config.js';
 import { TrendyolClient } from './trendyol-client.js';
 import { consumeConfirmation, requestConfirmation } from './confirmation-store.js';
 
-const jsonText = (value: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] });
+const jsonText = (value: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(value) }] });
 
 function writeGuard(toolName: string, payload: unknown, confirmationId?: string, approved?: boolean) {
   if (!approved || !confirmationId) {
