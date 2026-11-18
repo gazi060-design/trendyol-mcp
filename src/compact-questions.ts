@@ -12,7 +12,7 @@ import { TrendyolClient } from './trendyol-client.js';
  */
 export function registerCompactQuestionTools(server: McpServer, config: AppConfig): void {
   server.registerTool('trendyol_poll_pending_questions', {
-    description: 'Preferred low-token read-only polling for unanswered questions. Returns one bounded SOURCE page, minimal fields, and nextPage. Continue until nextPage=null even if questions=[]; if none, stop immediately. For order-like questions use privateOnly=true, but private=false is NOT authoritative proof of order linkage. Call details only when necessary. Does not answer questions.',
+    description: 'Preferred low-token read-only polling for unanswered questions. Returns one bounded SOURCE page, minimal fields, and nextPage. Continue until nextPage=null even if questions=[]; stop if first page has nextPage=null and questions=[]. For order-like questions use privateOnly=true, but private=false is NOT authoritative proof of order linkage. Call details only when necessary. Does not answer questions.',
     inputSchema: z.object({
       store: z.string().min(1),
       page: z.number().int().nonnegative().default(0),
