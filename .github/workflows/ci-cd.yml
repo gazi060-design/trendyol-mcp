@@ -81,6 +81,10 @@ jobs:
           set -euo pipefail
           cd "$1"
           expected_sha="$2"
+          # Non-interactive SSH shells may omit the deploy user's ~/bin from PATH.
+          # Preserve system paths and prefer the existing rootless Docker CLI.
+          export PATH="$HOME/bin:$PATH"
+          command -v docker >/dev/null || { echo "Docker CLI not found in PATH: $PATH" >&2; exit 127; }
           # Use the existing rootless Docker user's daemon and persistent volumes.
           export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
           if [[ -S "$XDG_RUNTIME_DIR/docker.sock" ]]; then
