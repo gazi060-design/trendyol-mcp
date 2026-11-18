@@ -5,7 +5,7 @@ import { getStore } from './config.js';
 import { TrendyolClient } from './trendyol-client.js';
 
 const jsonText = (value: unknown) => ({
-  content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }]
+  content: [{ type: 'text' as const, text: JSON.stringify(value) }]
 });
 
 const storeField = z.string().min(1).describe('Trendyol store alias configured in TRENDYOL_STORES_JSON');
